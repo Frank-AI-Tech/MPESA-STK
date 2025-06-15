@@ -1,49 +1,60 @@
 const express = require('express');
 const axios = require('axios');
 const bodyParser = require('body-parser');
+const path = require('path');
 const config = require('./config');
 
 const app = express();
 app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
-const { consumerKey, consumerSecret, shortCode, passkey, number, amount, callbackUrl } = config;
+const { consumerKey, consumerSecret, shortCode, passkey, callbackUrl } = config;
 
+// Get access token
 const getAccessToken = async () => {
     const url = "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials";
-    const encodedCredentials = new Buffer.from(consumerKey + ":" + consumerSecret).toString('base64');
+    const encodedCredentials = Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64');
     const headers = {
-        'Authorization': "Basic " + encodedCredentials,
+        'Authorization': `Basic ${encodedCredentials}`,
         'Content-Type': 'application/json'
     };
     const response = await axios.get(url, { headers });
     return response.data.access_token;
 };
 
-const sendStkPush = async () => {
-    const token = await getAccessToken();
-    const timestamp = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
-    const stk_password = new Buffer.from(shortCode + passkey + timestamp).toString("base64");
+// STK Push endpoint
+app.post('/api/stkpush', async (req, res) => {
+    try {
+        const { phone, amount } = req.body;
+        const token = await getAccessToken();
+        const timestamp = new Date().toISOString().replace(/[-T:.Z]/g, '').slice(0, 14);
+        const stk_password = Buffer.from(`${shortCode}${passkey}${timestamp}`).toString("base64");
 
-    const url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
-    const headers = { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
-    const requestBody = {
-        BusinessShortCode: shortCode,
-        Password: stk_password,
-        Timestamp: timestamp,
-        TransactionType: "CustomerPayBillOnline",
-        Amount: amount,
-        PartyA: number,
-        PartyB: shortCode,
-        PhoneNumber: number,
-        AccountReference: "account",
-        TransactionDesc: "test",
-        CallBackURL: callbackUrl
-    };
+        const url = "https://sandbox.safaricom.co.ke/mpesa/stkpush/v1/processrequest";
+        const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+        const requestBody = {
+            BusinessShortCode: shortCode,
+            Password: stk_password,
+            Timestamp: timestamp,
+            TransactionType: "CustomerPayBillOnline",
+            Amount: amount,
+            PartyA: phone,
+            PartyB: shortCode,
+            PhoneNumber: phone,
+            AccountReference: "Payment",
+            TransactionDesc: "Payment",
+            CallBackURL: callbackUrl
+        };
 
-    const response = await axios.post(url, requestBody, { headers });
-    console.log('STK Push Response:', response.data);
-};
+        const response = await axios.post(url, requestBody, { headers });
+        res.json(response.data);
+    } catch (error) {
+        console.error('STK Push Error:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to initiate payment' });
+    }
+});
 
+// Callback URL
 app.post('/mpesa/callback', (req, res) => {
     const callbackData = req.body;
 
@@ -58,8 +69,6 @@ app.post('/mpesa/callback', (req, res) => {
         console.log('MpesaReceiptNumber:', details.MpesaReceiptNumber);
         console.log('TransactionDate:', details.TransactionDate);
         console.log('PhoneNumber:', details.PhoneNumber);
-
-        
     } else {
         console.log('Payment failed or was cancelled:', callbackData.Body.stkCallback.ResultDesc);
     }
@@ -67,9 +76,12 @@ app.post('/mpesa/callback', (req, res) => {
     res.status(200).send({ ResultCode: 0, ResultDesc: "Accepted" });
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running on https://mpesastk-e28452b2a3a3.herokuapp.com`);
+// Serve index.html for all other routes
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-sendStkPush();
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
